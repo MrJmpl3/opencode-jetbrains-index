@@ -1,6 +1,8 @@
 # @ineersa/opencode-jetbrains-index-plugin
 
-OpenCode **server plugin** that ports JetBrains-index guardrail behavior from the original `my-pi` extension (IDE-first policy reminders, diagnostics gate, read/move guardrails).
+OpenCode **server plugin** (OpenCode V2 API, `Plugin.define`) that ports JetBrains-index guardrail behavior from the original `my-pi` extension (IDE-first policy reminders, diagnostics gate, read/move guardrails).
+
+Requires OpenCode `>=2.0.0`. Built against `@opencode/plugin ^2.0.24`.
 
 ## Mandatory dependency
 
@@ -24,7 +26,7 @@ If either condition is missing, the plugin self-disables for that session.
 
 ## What it does (when active)
 
-- Injects strict JetBrains IDE-index policy reminders (`experimental.chat.system.transform`)
+- Injects strict JetBrains IDE-index policy reminders (`ctx.session.hook("context")` editing `event.system`)
 - Enforces the hard read guardrail:
   - after **4 consecutive large unbounded reads** (>200 lines), the next unbounded read is blocked
 - Applies non-symbolic streak blocking (`read` / searchy `bash` / `grep` style flow)
@@ -86,9 +88,28 @@ Then add it in your OpenCode config (`opencode.json`):
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@ineersa/opencode-jetbrains-index-plugin"]
+  "plugins": ["@ineersa/opencode-jetbrains-index-plugin"]
 }
 ```
+
+## V2 hook mapping
+
+Plugin id: `opencode.jetbrains-index-guard` (registered via `Plugin.define({id, setup})`).
+
+| V1 | V2 |
+|----|----|
+| `event` (`session.created` / `session.deleted` / `server.instance.disposed`) | `ctx.event.subscribe()` handling `session.created` / `session.deleted` / `global.disposed` |
+| `chat.message` | `ctx.session.hook("prompt")` |
+| `experimental.chat.system.transform` (mutates `output.system`) | `ctx.session.hook("context")` editing `event.system` |
+| `tool.execute.before` (reads `output.args`, throws to block) | `ctx.tool.hook("execute.before")` reading `event.input`, throws to block |
+| `tool.execute.after` (appends to `output`) | `ctx.tool.hook("execute.after")` annotating `event.result` when `status === "completed"` |
+| returned-hooks disposal | cleanup function returned by `setup` (aborts the event subscription, shuts down the diagnostics tracker) |
+
+Notes:
+
+- `ctx.location.directory` replaces the V1 `ctx.directory`.
+- `session.created` / `session.deleted` payloads carry `data.sessionID` directly in V2.
+- Notifications that used `client.tui.publish({type: "tui.toast.show"})` have no V2 plugin-API equivalent, so `src/toast.ts` falls back to best-effort `console.warn` / `console.info` logging. Notifications never throw and never block edit/write gating.
 
 ## Local install / development notes
 
@@ -105,7 +126,7 @@ Use a **file plugin spec** in `opencode.json` (no npm publish/install needed).
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///absolute/path/to/plugin"]
+  "plugins": ["file:///absolute/path/to/plugin"]
 }
 ```
 
