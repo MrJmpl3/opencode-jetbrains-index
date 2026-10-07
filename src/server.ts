@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { Hooks, Plugin, PluginModule } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 import { showToast } from "./toast.js";
 import {
 	DEFAULT_IDE_TOOL_NAMES,
@@ -40,8 +40,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 	return value as Record<string, unknown>;
 }
 
-function countTextLinesFromToolOutput(output: unknown): number {
-	const record = asRecord(output);
+function countTextLinesFromToolResult(result: unknown): number {
+	const record = asRecord(result);
 	if (!record) {
 		return 0;
 	}
@@ -51,6 +51,10 @@ function countTextLinesFromToolOutput(output: unknown): number {
 	}
 
 	const content = record.content;
+	if (typeof content === "string") {
+		return content.length > 0 ? content.split(/\r?\n/).length : 0;
+	}
+
 	if (!Array.isArray(content)) {
 		return 0;
 	}
@@ -79,6 +83,11 @@ function appendSystemReminder(output: unknown, reminder: string): void {
 
 	if (typeof record.output === "string") {
 		record.output = record.output.length > 0 ? `${record.output}\n\n${reminder}` : reminder;
+		return;
+	}
+
+	if (typeof record.content === "string") {
+		record.content = record.content.length > 0 ? `${record.content}\n\n${reminder}` : reminder;
 		return;
 	}
 
@@ -191,6 +200,12 @@ function describeNonSymbolicTool(toolName: string, input: Record<string, unknown
 }
 
 function extractSessionIdFromEvent(event: Record<string, unknown>): string | undefined {
+	const data = asRecord(event.data);
+	const dataSessionId = data?.sessionID;
+	if (typeof dataSessionId === "string" && dataSessionId.length > 0) {
+		return dataSessionId;
+	}
+
 	const properties = asRecord(event.properties);
 	if (!properties) {
 		return undefined;
@@ -210,50 +225,52 @@ function extractSessionIdFromEvent(event: Record<string, unknown>): string | und
 	return undefined;
 }
 
-const server: Plugin = async (ctx) => {
-	const state = new SessionStateStore();
-	const tracker = new ProblemsTracker();
+export default Plugin.define({
+	id: "opencode.jetbrains-index-guard",
+	async setup(ctx) {
+		const directory = ctx.location.directory;
+		const state = new SessionStateStore();
+		const tracker = new ProblemsTracker();
 
-	let extensionEnabled = false;
-	let indexDisabledForSession = false;
-	const activeTools = [...DEFAULT_IDE_TOOL_NAMES];
+		let extensionEnabled = false;
+		let indexDisabledForSession = false;
+		const activeTools = [...DEFAULT_IDE_TOOL_NAMES];
 
-	function getDisableReason(): string {
-		return tracker.getStatus().lastError ?? "requirements not satisfied";
-	}
-
-	async function disableForSession(reason: string): Promise<void> {
-		if (indexDisabledForSession) {
-			return;
+		function getDisableReason(): string {
+			return tracker.getStatus().lastError ?? "requirements not satisfied";
 		}
 
-		indexDisabledForSession = true;
-		extensionEnabled = false;
-		tracker.reset();
-		await tracker.shutdown();
-		void showToast(ctx.client, "warning", `⚠️ JetBrains index disabled for this session: ${reason}`, "JetBrains Index");
-		void showToast(ctx.client, "info", "ℹ️ Edit/write will proceed without index checks or diagnostics.", "JetBrains Index");
-	}
-
-	async function refreshExtensionEnabled(): Promise<boolean> {
-		try {
-			const connected = await tracker.initialize(ctx.directory);
-			extensionEnabled = connected;
-			if (!connected) {
-				await tracker.shutdown();
+		async function disableForSession(reason: string): Promise<void> {
+			if (indexDisabledForSession) {
+				return;
 			}
-			return connected;
-		} catch {
+
+			indexDisabledForSession = true;
 			extensionEnabled = false;
+			tracker.reset();
 			await tracker.shutdown();
-			return false;
+			void showToast("warning", `⚠️ JetBrains index disabled for this session: ${reason}`, "JetBrains Index");
+			void showToast("info", "ℹ️ Edit/write will proceed without index checks or diagnostics.", "JetBrains Index");
 		}
-	}
 
-	await refreshExtensionEnabled();
+		async function refreshExtensionEnabled(): Promise<boolean> {
+			try {
+				const connected = await tracker.initialize(directory);
+				extensionEnabled = connected;
+				if (!connected) {
+					await tracker.shutdown();
+				}
+				return connected;
+			} catch {
+				extensionEnabled = false;
+				await tracker.shutdown();
+				return false;
+			}
+		}
 
-	const hooks: Hooks = {
-		event: async ({ event }) => {
+		await refreshExtensionEnabled();
+
+		async function handleEvent(event: unknown): Promise<void> {
 			const record = asRecord(event);
 			if (!record || typeof record.type !== "string") {
 				return;
@@ -281,17 +298,33 @@ const server: Plugin = async (ctx) => {
 				return;
 			}
 
-			if (record.type === "server.instance.disposed") {
+			if (record.type === "global.disposed") {
 				state.clearAll();
 				extensionEnabled = false;
 				indexDisabledForSession = false;
 				tracker.reset();
 				void tracker.shutdown();
 			}
-		},
+		}
 
-		"chat.message": async (input) => {
-			state.resetTurn(input.sessionID);
+		const controller = new AbortController();
+		void (async () => {
+			try {
+				for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+					try {
+						await handleEvent(event);
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						console.warn(`[JetBrains Index] Event handling failed: ${message}`);
+					}
+				}
+			} catch {
+				// Subscription aborted during plugin cleanup.
+			}
+		})();
+
+		await ctx.session.hook("prompt", async (event) => {
+			state.resetTurn(event.sessionID);
 			tracker.reset();
 
 			if (indexDisabledForSession) {
@@ -304,38 +337,30 @@ const server: Plugin = async (ctx) => {
 				return;
 			}
 
-			state.markSessionNudgePending(input.sessionID);
-		},
+			state.markSessionNudgePending(event.sessionID);
+		});
 
-		"experimental.chat.system.transform": async (input, output) => {
-			if (!Array.isArray(output.system)) {
-				output.system = [];
-			}
-
+		await ctx.session.hook("context", (event) => {
 			if (!extensionEnabled || indexDisabledForSession) {
 				return;
 			}
 
-			output.system.push(wrapSystemReminder(buildSystemPromptPolicy(activeTools)));
+			event.system.push({ type: "text", text: wrapSystemReminder(buildSystemPromptPolicy(activeTools)) });
 
-			if (!input.sessionID) {
-				return;
+			state.markSessionNudgePending(event.sessionID);
+			if (state.consumeSessionNudge(event.sessionID)) {
+				event.system.push({ type: "text", text: buildSessionStartIdeNudge(activeTools) });
 			}
+		});
 
-			state.markSessionNudgePending(input.sessionID);
-			if (state.consumeSessionNudge(input.sessionID)) {
-				output.system.push(buildSessionStartIdeNudge(activeTools));
-			}
-		},
-
-		"tool.execute.before": async (input, output) => {
+		await ctx.tool.hook("execute.before", async (event) => {
 			if (!extensionEnabled || indexDisabledForSession) {
 				return;
 			}
 
-			const args = asRecord(output.args) ?? {};
-			const sessionState = state.ensure(input.sessionID);
-			const effectiveToolName = resolveEffectiveToolName({ toolName: input.tool, input: args });
+			const args = asRecord(event.input) ?? {};
+			const sessionState = state.ensure(event.sessionID);
+			const effectiveToolName = resolveEffectiveToolName({ toolName: event.tool, input: args });
 
 			if (isSearchFirstResetTool(effectiveToolName)) {
 				sessionState.consecutiveLargeReadCountThisTurn = 0;
@@ -374,7 +399,7 @@ const server: Plugin = async (ctx) => {
 				}
 			}
 
-			if (input.tool !== "edit" && input.tool !== "write") {
+			if (event.tool !== "edit" && event.tool !== "write") {
 				return;
 			}
 
@@ -383,7 +408,7 @@ const server: Plugin = async (ctx) => {
 				return;
 			}
 
-			const absolutePath = resolve(ctx.directory, filePath);
+			const absolutePath = resolve(directory, filePath);
 			let beforeMutation;
 			try {
 				beforeMutation = await tracker.beforeFileMutation(absolutePath);
@@ -405,19 +430,24 @@ const server: Plugin = async (ctx) => {
 			throw new Error(
 				`${reason} Extension disabled for this session — subsequent edits will proceed without index checks.`,
 			);
-		},
+		});
 
-		"tool.execute.after": async (input, output) => {
+		await ctx.tool.hook("execute.after", async (event) => {
 			if (!extensionEnabled || indexDisabledForSession) {
 				return;
 			}
 
-			const args = asRecord(input.args) ?? {};
-			const sessionState = state.ensure(input.sessionID);
+			if (event.status !== "completed") {
+				return;
+			}
 
-			if (input.tool === "read") {
+			const args = asRecord(event.input) ?? {};
+			const result = event.result;
+			const sessionState = state.ensure(event.sessionID);
+
+			if (event.tool === "read") {
 				const unbounded = isUnboundedReadInput(args);
-				const lineCount = countTextLinesFromToolOutput(output);
+				const lineCount = countTextLinesFromToolResult(result);
 				const isLargeRead = lineCount > LARGE_READ_LINE_THRESHOLD;
 
 				if (!unbounded) {
@@ -461,11 +491,10 @@ const server: Plugin = async (ctx) => {
 						const now = Date.now();
 						if (now - sessionState.lastReadReminderAt >= NUDGE_COOLDOWN_MS) {
 							sessionState.lastReadReminderAt = now;
-							appendReminderWithVisibility(output, buildReadEfficiencyReminder(activeTools, reasons), [
-								`Injected read-efficiency reminder after ${input.tool} (${lineCount} lines, unbounded=${unbounded ? "yes" : "no"}).`,
+							appendReminderWithVisibility(result, buildReadEfficiencyReminder(activeTools, reasons), [
+								`Injected read-efficiency reminder after ${event.tool} (${lineCount} lines, unbounded=${unbounded ? "yes" : "no"}).`,
 							]);
 							void showToast(
-								ctx.client,
 								"warning",
 								"⚠ Prefer search-first and bounded reads for token efficiency",
 								"Read Efficiency",
@@ -475,7 +504,7 @@ const server: Plugin = async (ctx) => {
 				}
 			}
 
-			if (input.tool === "bash") {
+			if (event.tool === "bash") {
 				const command = getBashCommand(args);
 				if (command && isMoveCommand(command)) {
 					const now = Date.now();
@@ -483,7 +512,7 @@ const server: Plugin = async (ctx) => {
 					sessionState.lastMoveReminderAt = now;
 
 					appendReminderWithVisibility(
-						output,
+						result,
 						buildMoveRefactorReminder(activeTools, toCommandPreview(command)),
 						[
 							"Injected move-refactor reminder after detecting mv/git mv in bash command.",
@@ -494,7 +523,6 @@ const server: Plugin = async (ctx) => {
 						],
 					);
 					void showToast(
-						ctx.client,
 						"warning",
 						"⚠ Detected mv/git mv. Prefer IDE move refactor for code files",
 						"Move Refactor",
@@ -502,7 +530,7 @@ const server: Plugin = async (ctx) => {
 				}
 			}
 
-			if (input.tool !== "edit" && input.tool !== "write") {
+			if (event.tool !== "edit" && event.tool !== "write") {
 				return;
 			}
 
@@ -511,9 +539,9 @@ const server: Plugin = async (ctx) => {
 				return;
 			}
 
-			const absolutePath = resolve(ctx.directory, filePath);
+			const absolutePath = resolve(directory, filePath);
 			try {
-				appendSystemReminder(output, buildPluginVisibilityNotice([
+				appendSystemReminder(result, buildPluginVisibilityNotice([
 					`Diagnostics check scheduled for edited file: ${filePath}`,
 					`Will sync exactly this edited path with jetbrains_index_ide_sync_files before diagnostics.`,
 					`Waiting ${Math.round(DIAGNOSTICS_POST_EDIT_DELAY_MS / 1000)}s before querying IDE diagnostics.`,
@@ -523,12 +551,12 @@ const server: Plugin = async (ctx) => {
 
 				const diagnosticsResult = await tracker.getNewProblems([absolutePath]);
 				for (const outcome of diagnosticsResult.outcomes) {
-					appendSystemReminder(output, buildDiagnosticsOutcomeNotice(outcome));
+					appendSystemReminder(result, buildDiagnosticsOutcomeNotice(outcome));
 				}
 
 				const incompleteOutcome = diagnosticsResult.outcomes.find((outcome) => outcome.status !== "checked");
 				if (incompleteOutcome) {
-					appendSystemReminder(output, buildPluginVisibilityNotice([
+					appendSystemReminder(result, buildPluginVisibilityNotice([
 						`Diagnostics check did not complete for ${filePath}.`,
 						`Status: ${incompleteOutcome.status}`,
 						...(incompleteOutcome.reason ? [`Reason: ${incompleteOutcome.reason}`] : []),
@@ -537,7 +565,7 @@ const server: Plugin = async (ctx) => {
 				}
 
 				if (diagnosticsResult.files.length === 0) {
-					appendSystemReminder(output, buildPluginVisibilityNotice([
+					appendSystemReminder(result, buildPluginVisibilityNotice([
 						`Diagnostics check completed for ${filePath}.`,
 						"No new diagnostics were introduced by this edit/write.",
 					]));
@@ -546,32 +574,31 @@ const server: Plugin = async (ctx) => {
 
 				const newProblemCount = diagnosticsResult.files.reduce((sum, file) => sum + file.diagnostics.length, 0);
 				const summary = formatDiagnosticsSummary(diagnosticsResult.files);
-				appendReminderWithVisibility(output, buildNewDiagnosticsReminder(summary), [
+				appendReminderWithVisibility(result, buildNewDiagnosticsReminder(summary), [
 					`Injected diagnostics reminder for edited file: ${filePath}`,
 					`New diagnostics detected: ${newProblemCount}`,
 				]);
 				void showToast(
-					ctx.client,
 					"warning",
 					`🔍 New JetBrains index diagnostics: ${newProblemCount} issue${newProblemCount === 1 ? "" : "s"}`,
 					"Diagnostics",
 				);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				appendSystemReminder(output, buildPluginVisibilityNotice([
+				appendSystemReminder(result, buildPluginVisibilityNotice([
 					`Diagnostics check failed for ${filePath}.`,
 					`Error: ${message}`,
 				]));
 			}
-		},
-	};
+		});
 
-	return hooks;
-};
-
-const plugin: PluginModule & { id: string } = {
-	id: "opencode.jetbrains-index-guard",
-	server,
-};
-
-export default plugin;
+		return () => {
+			controller.abort();
+			state.clearAll();
+			extensionEnabled = false;
+			indexDisabledForSession = false;
+			tracker.reset();
+			void tracker.shutdown();
+		};
+	},
+});

@@ -1,74 +1,63 @@
 export type ToastVariant = "info" | "success" | "warning" | "error";
 
-/** Default duration in ms for toast notifications. */
-const DEFAULT_DURATION = 6_000;
+/**
+ * V2 notification fallback.
+ *
+ * The V1 implementation published `{type: "tui.toast.show"}` through
+ * `client.tui.publish`. That channel has no confirmed equivalent in the V2
+ * plugin API (the V2 context exposes no TUI domain), so notifications fall
+ * back to best-effort console logging. Logging never throws and never blocks
+ * the edit/write gating path.
+ */
+const VARIANT_PREFIX: Record<ToastVariant, string> = {
+	info: "ℹ️",
+	success: "✅",
+	warning: "⚠️",
+	error: "❌",
+};
 
-/** Longer duration for error/diagnostic toasts so the user has time to read. */
-const ERROR_DURATION = 10_000;
+function formatLogMessage(variant: ToastVariant, message: string, title?: string): string {
+	const scope = title ? `[JetBrains Index: ${title}]` : "[JetBrains Index]";
+	return `${VARIANT_PREFIX[variant]} ${scope} ${message}`;
+}
 
 /**
- * Show a toast notification in the opencode TUI via the server-side client.
- * Silently no-ops if the client is unavailable or the call fails.
+ * Show a best-effort notification via console logging.
+ * Never throws; safe to call with `void` from hook paths.
  */
 export async function showToast(
-	client: unknown,
 	variant: ToastVariant,
 	message: string,
 	title?: string,
-	duration?: number,
 ): Promise<void> {
-	if (!client || typeof client !== "object") {
-		return;
-	}
-
-	const event = {
-		type: "tui.toast.show" as const,
-		properties: {
-			variant,
-			message,
-			...(title ? { title } : undefined),
-			duration: duration ?? (variant === "error" || variant === "warning" ? ERROR_DURATION : DEFAULT_DURATION),
-		},
-	};
-
 	try {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const tui = (client as any).tui;
-		if (!tui || typeof tui.publish !== "function") {
-			return;
+		const formatted = formatLogMessage(variant, message, title);
+		if (variant === "warning" || variant === "error") {
+			console.warn(formatted);
+		} else {
+			console.info(formatted);
 		}
-		await tui.publish({ body: event });
 	} catch {
-		// Silently ignore — toast is best-effort, not critical path.
+		// Silently ignore — notification is best-effort, not critical path.
 	}
 }
 
 /**
- * Show a diagnostics-related toast with a summary of new problems.
- * Strips XML tags from the message for clean TUI display.
+ * Show a diagnostics-related notification with a summary of new problems.
+ * Strips XML tags from the message for clean log display.
  */
-export async function showDiagnosticsToast(
-	client: unknown,
-	summary: string,
-	filePath?: string,
-): Promise<void> {
+export async function showDiagnosticsToast(summary: string, filePath?: string): Promise<void> {
 	const cleanSummary = stripXmlTags(summary);
-	const title = filePath
-		? `⚠ Diagnostics: ${filePath}`
-		: "⚠ New Diagnostics";
+	const title = filePath ? `Diagnostics: ${filePath}` : "New Diagnostics";
 
-	await showToast(client, "warning", cleanSummary, title, ERROR_DURATION);
+	await showToast("warning", cleanSummary, title);
 }
 
 /**
- * Show an info toast for plugin status updates.
+ * Show an info notification for plugin status updates.
  */
-export async function showInfoToast(
-	client: unknown,
-	message: string,
-	title?: string,
-): Promise<void> {
-	await showToast(client, "info", message, title);
+export async function showInfoToast(message: string, title?: string): Promise<void> {
+	await showToast("info", message, title);
 }
 
 function stripXmlTags(text: string): string {
