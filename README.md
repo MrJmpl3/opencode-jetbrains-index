@@ -1,6 +1,6 @@
 # @ineersa/opencode-jetbrains-index-plugin
 
-OpenCode **server plugin** (OpenCode V2 API, `Plugin.define`) that ports JetBrains-index guardrail behavior from the original `my-pi` extension (IDE-first policy reminders, diagnostics gate, read/move guardrails).
+OpenCode V2 plugin (`Plugin.define`) that ports JetBrains-index guardrail behavior from the original `my-pi` extension (IDE-first policy reminders, diagnostics gate, read/move guardrails).
 
 Requires OpenCode `>=2.0.0`. Built against `@opencode/plugin ^2.0.24`.
 
@@ -72,8 +72,8 @@ When working with this codebase:
 This repository includes a ready-to-use `./opencode.json` that:
 
 - sets `"lsp": false`
-- configures `mcp.jetbrains-index` as a remote server
-- includes this plugin in `plugin`
+- configures `mcp.servers.jetbrains-index` as a remote server
+- includes this plugin in `plugins`
 
 The MCP server values were copied from `./.pi/mcp.json`.
 
@@ -184,5 +184,5 @@ npm publish --access public
 
 ## References
 
-- OpenCode MCP servers: https://opencode.ai/docs/mcp-servers/
-- OpenCode plugins: https://opencode.ai/docs/plugins
+- OpenCode MCP servers: https://opencode.ai/v2/docs/mcp-servers/
+- OpenCode plugins: https://opencode.ai/v2/docs/build/plugins
