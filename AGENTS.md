@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Description
-This repository contains `@ineersa/opencode-jetbrains-index-plugin`, an OpenCode **server plugin** that enforces JetBrains-index-first workflows.
+This repository contains `@ineersa/opencode-jetbrains-index-plugin`, an OpenCode V2 plugin (`Plugin.define`) that enforces JetBrains-index-first workflows.
 
 Main responsibilities:
 - Inject strict IDE-first system policy into chat context
@@ -9,7 +9,7 @@ Main responsibilities:
 - Nudge against shell `mv`/`git mv` for code moves
 - Gate `edit`/`write` on IDE index readiness and surface new diagnostics
 - Gracefully disable index-dependent guardrails for the current session if index connectivity/readiness fails
-- Emit TUI toasts for key reminders/status
+- Emit log-based notifications for key reminders/status (console fallback; V2 exposes no TUI toast channel)
 
 ## Commands
 - Install deps: `npm install`
@@ -23,14 +23,14 @@ Typical local loop:
 3. Restart OpenCode to reload plugin
 
 ## Project structure
-- `src/server.ts` — plugin entrypoint and hook wiring (`event`, `chat.message`, `experimental.chat.system.transform`, tool before/after guards)
+- `src/server.ts` — plugin entrypoint and hook wiring (`ctx.event.subscribe`, `session.hook("prompt"/"context")`, `ctx.tool.hook("execute.before"/"execute.after")`)
 - `src/prompts.ts` — system-reminder text builders and strict IDE policy text
 - `src/state.ts` — per-session/per-turn counters and reminder state
 - `src/problems-tracker.ts` — pre/post mutation diagnostics pipeline orchestration
 - `src/mcp-problems-client.ts` — MCP transport for JetBrains index calls
 - `src/mcp-config.ts` — MCP server config discovery
 - `src/tool-names.ts` — tool name resolution/helpers (`mcp` proxy + IDE tool detection)
-- `src/toast.ts` — TUI toast publishing helpers
+- `src/toast.ts` — log-based notification helpers (V2 console fallback)
 - `src/diagnostics.ts` — diagnostics formatting and comparison helpers
 - `src/constants.ts` — thresholds, cooldowns, and policy constants
 - `README.md` — usage/setup docs
