@@ -37,13 +37,13 @@
   ],
   "engines": {
     "node": ">=20",
-    "opencode": ">=1.0.0"
+    "opencode": ">=2.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.2"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.4.3",
+    "@opencode/plugin": "^2.0.24",
     "@types/node": "^22.13.10",
     "typescript": "^5.8.3"
   }
