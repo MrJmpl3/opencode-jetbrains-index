@@ -75,7 +75,7 @@ This repository includes a ready-to-use `./opencode.json` that:
 - configures `mcp.servers.jetbrains-index` as a remote server
 - includes this plugin in `plugins`
 
-The MCP server values were copied from `./.pi/mcp.json`.
+The MCP server URL and port mirror `./.pi/mcp.json` (same JetBrains index endpoint).
 
 ## Install from npm
 

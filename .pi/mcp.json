@@ -6,7 +6,7 @@
   },
   "mcpServers": {
     "jetbrains-index": {
-      "url": "http://127.0.0.1:29175/index-mcp/streamable-http",
+      "url": "http://127.0.0.1:29173/index-mcp/streamable-http",
       "headers": {},
       "directTools": true,
       "exposeResources": false

@@ -101,29 +101,38 @@ function findJetBrainsIndexInOpenCodeConfig(configPath: string): JetBrainsMcpSer
 		return null;
 	}
 
-	for (const serverName of JETBRAINS_INDEX_SERVER_NAMES) {
-		const server = (mcp as Record<string, unknown>)[serverName];
-		if (!(server && typeof server === "object")) {
-			continue;
-		}
+	// V1 places server names directly under `mcp`; V2 nests them under `mcp.servers`.
+	const shapes: Array<Record<string, unknown>> = [mcp as Record<string, unknown>];
+	const nested = (mcp as { servers?: unknown }).servers;
+	if (nested && typeof nested === "object") {
+		shapes.push(nested as Record<string, unknown>);
+	}
 
-		const maybeType = (server as { type?: unknown }).type;
-		const maybeUrl = (server as { url?: unknown }).url;
-		if (maybeType !== "remote" || typeof maybeUrl !== "string") {
-			continue;
-		}
+	for (const servers of shapes) {
+		for (const serverName of JETBRAINS_INDEX_SERVER_NAMES) {
+			const server = servers[serverName];
+			if (!(server && typeof server === "object")) {
+				continue;
+			}
 
-		const streamableUrl = maybeUrl.trim();
-		if (!streamableUrl || !/^https?:\/\//i.test(streamableUrl)) {
-			continue;
-		}
+			const maybeType = (server as { type?: unknown }).type;
+			const maybeUrl = (server as { url?: unknown }).url;
+			if (maybeType !== "remote" || typeof maybeUrl !== "string") {
+				continue;
+			}
 
-		return {
-			serverName,
-			sseUrl: streamableUrl,
-			headers: toHeaders((server as { headers?: unknown }).headers),
-			configPath,
-		};
+			const streamableUrl = maybeUrl.trim();
+			if (!streamableUrl || !/^https?:\/\//i.test(streamableUrl)) {
+				continue;
+			}
+
+			return {
+				serverName,
+				sseUrl: streamableUrl,
+				headers: toHeaders((server as { headers?: unknown }).headers),
+				configPath,
+			};
+		}
 	}
 
 	return null;
