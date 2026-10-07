@@ -3,11 +3,12 @@
   "lsp": false,
   "plugins": ["file:///home/mrjmpl3/Documentos/Proyectos/Desarrollos/github.com/MrJmpl3/Package/Typescript/OpenCode/opencode-jetbrains-index"],
   "mcp": {
-    "jetbrains-index": {
-      "type": "remote",
-      "url": "http://127.0.0.1:29173/index-mcp/streamable-http",
-      "headers": {},
-      "enabled": true
+    "servers": {
+      "jetbrains-index": {
+        "type": "remote",
+        "url": "http://127.0.0.1:29173/index-mcp/streamable-http",
+        "headers": {}
+      }
     }
   }
 }
